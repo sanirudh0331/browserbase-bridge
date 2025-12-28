@@ -1,7 +1,7 @@
 import puppeteer from 'puppeteer-core';
 
 export const config = {
-  maxDuration: 60,
+  maxDuration: 60, // Maximum allowed time
 };
 
 export default async function handler(req, res) {
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
 
   let browser;
   try {
-    console.log(`[Bridge] Connecting... Target: ${url}`);
+    console.log(`[Bridge] Starting... Target: ${url}`);
     
     const connectUrl = `wss://connect.browserbase.com?apiKey=${BROWSERBASE_API_KEY}&projectId=${BROWSERBASE_PROJECT_ID}`;
     browser = await puppeteer.connect({ 
@@ -24,55 +24,63 @@ export default async function handler(req, res) {
     
     const page = await browser.newPage();
     
-    // 1. Set a real screen size so buttons are visible
+    // 1. MASQUERADE AS A REAL USER (Crucial for StreetContxt/BlueMatrix)
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1920, height: 1080 });
 
-    // 2. Go to URL and wait for Network Idle (safer than domcontentloaded)
-    // We assume the URL is already unwrapped by Google Sheets
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
+    // 2. NAVIGATE & FOLLOW REDIRECTS
+    // We bump the timeout to 40s because redirect chains can be slow
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 40000 });
 
-    // 3. AGGRESSIVE DISCLAIMER BUSTER
+    // DEBUG: Print where we actually landed
+    const finalUrl = page.url();
+    const pageTitle = await page.title();
+    console.log(`[Bridge] Landed on: "${pageTitle}" | URL: ${finalUrl}`);
+
+    // 3. SMART DISCLAIMER CLICKER
+    // We look for specific BlueMatrix "Agree" buttons
+    const buttonsToClick = [
+      "input[value='I Agree']", 
+      "input[value='Accept']",
+      "a#btnAgree",
+      "button#agree-button",
+      "form[name='disclaimer'] input[type='submit']"
+    ];
+
     try {
-      // Common BlueMatrix / Portal selectors
-      const selectors = [
-        "input[value='I Agree']", 
-        "input[value='Accept']", 
-        "input[name='btnAgree']",
-        "button#accept", 
-        "a[href*='accept']",
-        ".disclaimer-accept"
-      ];
-      
-      // Wait up to 5s to see if a button exists
+      // Race to find any of these buttons within 5 seconds
       const foundSelector = await Promise.any(
-        selectors.map(s => page.waitForSelector(s, { timeout: 5000 }).then(() => s))
+        buttonsToClick.map(sel => page.waitForSelector(sel, { timeout: 5000 }).then(() => sel))
       );
 
       if (foundSelector) {
-        console.log(`[Bridge] Clicker: Found ${foundSelector}`);
-        
-        // Click and wait for the page to actually change
+        console.log(`[Bridge] FOUND DISCLAIMER BUTTON: ${foundSelector}. Clicking...`);
         await Promise.all([
-          page.click(foundSelector),
-          // Wait for navigation OR just wait 5 seconds if it's a single-page-app
-          new Promise(resolve => setTimeout(resolve, 5000))
+           // Wait for navigation after clicking (or 5s timeout if it's JS only)
+           new Promise(r => setTimeout(r, 5000)),
+           page.click(foundSelector)
         ]);
+        console.log("[Bridge] Click processed. Waiting for PDF render...");
       }
     } catch (e) {
-      console.log("[Bridge] No disclaimer button found (or timed out). Assuming direct access.");
+      console.log("[Bridge] No disclaimer button found. Assuming direct access or PDF viewer.");
     }
 
-    // 4. FINAL SAFETY WAIT
-    // BlueMatrix reports are heavy. Give them 6 seconds to render the text.
-    await new Promise(r => setTimeout(r, 6000));
+    // 4. WAIT FOR PDF CONTENT
+    // Sometimes the PDF is inside an <embed> or specific viewer div.
+    // We wait 5 seconds just to be safe.
+    await new Promise(r => setTimeout(r, 5000));
 
-    // 5. Generate PDF
-    const pdfBuffer = await page.pdf({ 
-      format: 'A4',
-      printBackground: true 
-    });
+    // 5. CAPTURE
+    const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+    const sizeKB = Math.round(pdfBuffer.length / 1024);
 
-    console.log(`[Bridge] Success. PDF Size: ${pdfBuffer.length}`);
+    console.log(`[Bridge] Capture Complete. Size: ${sizeKB} KB`);
+
+    if (sizeKB < 20) {
+      console.warn("[Bridge WARNING] PDF is suspiciously small. Likely failed to bypass gateway.");
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
     res.status(200).send(pdfBuffer);
 
