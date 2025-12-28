@@ -9,8 +9,8 @@ export default async function handler(req, res) {
   if (!url) return res.status(400).send("Missing URL");
 
   // --- HARDCODED KEYS (Paste yours here again) ---
-  const BROWSERBASE_API_KEY = 'PASTE_YOUR_BB_KEY_HERE';
-  const BROWSERBASE_PROJECT_ID = 'PASTE_YOUR_PROJECT_ID_HERE';
+  const BROWSERBASE_API_KEY = 'bb_live_s1lMcjQNpDfm2EueNfwHRU7trZ0';
+  const BROWSERBASE_PROJECT_ID = 'c63fb2f1-ff9c-4846-96a3-8274af5245d3';
   // -----------------------------------------------
 
   let browser;
