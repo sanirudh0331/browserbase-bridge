@@ -1,70 +1,78 @@
 import puppeteer from 'puppeteer-core';
 
-// Allow this function to run for up to 60 seconds
 export const config = {
-  maxDuration: 60, 
+  maxDuration: 60,
 };
 
 export default async function handler(req, res) {
-  // 1. Get the URL from the request
   const { url } = req.query;
-  if (!url) return res.status(400).send("Missing URL parameter");
+  if (!url) return res.status(400).send("Missing URL");
 
-  // 2. Get Keys from Environment Variables
-  const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
-  const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
-
-  if (!BROWSERBASE_API_KEY || !BROWSERBASE_PROJECT_ID) {
-    return res.status(500).send("Server Config Error: Missing Browserbase keys");
-  }
+  // --- HARDCODED KEYS (Paste yours here again) ---
+  const BROWSERBASE_API_KEY = 'PASTE_YOUR_BB_KEY_HERE';
+  const BROWSERBASE_PROJECT_ID = 'PASTE_YOUR_PROJECT_ID_HERE';
+  // -----------------------------------------------
 
   let browser;
   try {
-    console.log(`[Bridge] Connecting to Browserbase for: ${url}`);
-
-    // 3. Connect to Browserbase
+    console.log(`[Bridge] Connecting... Target: ${url}`);
+    
     const connectUrl = `wss://connect.browserbase.com?apiKey=${BROWSERBASE_API_KEY}&projectId=${BROWSERBASE_PROJECT_ID}`;
-    browser = await puppeteer.connect({ browserWSEndpoint: connectUrl });
-
+    browser = await puppeteer.connect({ 
+      browserWSEndpoint: connectUrl,
+    });
+    
     const page = await browser.newPage();
+    
+    // 1. Set a real screen size so buttons are visible
+    await page.setViewport({ width: 1920, height: 1080 });
 
-    // 4. Navigate to the URL
-    // We set a long timeout (30s) and wait for content to load
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // 2. Go to URL and wait for Network Idle (safer than domcontentloaded)
+    // We assume the URL is already unwrapped by Google Sheets
+    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
 
-    // 5. "BlueMatrix" Disclaimer Buster
-    // We look for common "I Agree" buttons and click them if found
+    // 3. AGGRESSIVE DISCLAIMER BUSTER
     try {
-      const disclaimerSelectors = [
-        "input[value='I Agree']", "input[value='Accept']", 
-        "button#accept", "a[href*='accept']"
+      // Common BlueMatrix / Portal selectors
+      const selectors = [
+        "input[value='I Agree']", 
+        "input[value='Accept']", 
+        "input[name='btnAgree']",
+        "button#accept", 
+        "a[href*='accept']",
+        ".disclaimer-accept"
       ];
-
+      
+      // Wait up to 5s to see if a button exists
       const foundSelector = await Promise.any(
-        disclaimerSelectors.map(sel => page.waitForSelector(sel, { timeout: 3000 }).then(() => sel))
+        selectors.map(s => page.waitForSelector(s, { timeout: 5000 }).then(() => s))
       );
 
       if (foundSelector) {
-        console.log('[Bridge] Disclaimer found. Clicking...');
+        console.log(`[Bridge] Clicker: Found ${foundSelector}`);
+        
+        // Click and wait for the page to actually change
         await Promise.all([
-           page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {}),
-           page.click(foundSelector)
+          page.click(foundSelector),
+          // Wait for navigation OR just wait 5 seconds if it's a single-page-app
+          new Promise(resolve => setTimeout(resolve, 5000))
         ]);
       }
     } catch (e) {
-      console.log('[Bridge] No disclaimer detected. Proceeding...');
+      console.log("[Bridge] No disclaimer button found (or timed out). Assuming direct access.");
     }
 
-    // 6. Pause to let the PDF viewer render
-    await new Promise(r => setTimeout(r, 4000));
+    // 4. FINAL SAFETY WAIT
+    // BlueMatrix reports are heavy. Give them 6 seconds to render the text.
+    await new Promise(r => setTimeout(r, 6000));
 
-    // 7. Generate the PDF
+    // 5. Generate PDF
     const pdfBuffer = await page.pdf({ 
       format: 'A4',
       printBackground: true 
     });
 
-    // 8. Send PDF back to Google Sheets
+    console.log(`[Bridge] Success. PDF Size: ${pdfBuffer.length}`);
     res.setHeader('Content-Type', 'application/pdf');
     res.status(200).send(pdfBuffer);
 
